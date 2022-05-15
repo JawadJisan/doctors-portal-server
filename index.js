@@ -2,7 +2,8 @@ const express = require('express')
 const app = express()
 const cors = require('cors')
 const port = process.env.PORT || 5000;
-require('dotenv').config()
+require('dotenv').config();
+const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 
 
@@ -16,11 +17,28 @@ const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
 
 
+function verifyJWT(req, res, next){
+  const authHeaders = req.headers.authorization;
+  if(!authHeaders){
+    return res.status(401).send({message: 'UnAuthorized Access'})
+  }
+  const token = authHeaders.split(' ')[1];
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function(err, decoded) {
+    if(err){
+      return res.status(403).send({message: 'Forbidden access'})
+    }
+    req.decoded = decoded;
+    next();
+    // console.log(decoded)
+  });
+}
+
 async function run() {
   try {
     await client.connect();
     const serviceCollection = client.db('doctors_portal').collection('services');
     const bookingCollection = client.db('doctors_portal').collection('bookings');
+    const userCollection = client.db('doctors_portal').collection('users');
 
     app.get('/service', async (req, res) => {
       const query = {};
@@ -35,8 +53,62 @@ async function run() {
     * app.get('/booking/:id) // get a specific booking using id
     * app.get('/booking) // add a new booking
     * app.patch('/booking/:id) // update 
+    * app.put('/booking/:id) // upsert ==> update (if exists) or insert(dosen't exists)
     * app.delet('/booking/:id) // 
     */
+
+    /* for users  */
+    app.put('/user/:email', async (req, res)=>{
+      const email = req.params.email;
+      const user = req.body;
+      const filter = {email: email};
+      const options = { upsert: true };
+      const updateDoc = {
+        $set: user
+      };
+      const result =await userCollection.updateOne(filter, updateDoc, options);
+      const token = jwt.sign({email:email}, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' } )
+      // res.send(result, token);
+      res.status(200).send( {token, result})
+      // res.send(result, token)
+      // console.log(token);
+    })
+
+
+    /*  */
+    app.get('/user', verifyJWT, async(req, res)=>{
+      const users = await userCollection.find().toArray();
+      res.send(users);
+    })
+
+    /* admin */
+
+    app.put('/user/admin/:email', verifyJWT, async (req, res) => {
+      const email = req.params.email;
+      const requester = req.decoded.email;
+      const requesterAccount = await userCollection.findOne({email: requester});
+      if(requesterAccount.role === 'admin'){
+        const filter = { email: email };
+        const updateDoc = {
+          $set: { role: 'admin' },
+        };
+        const result = await userCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      }
+      else{
+        res.status(403).send({message:'Forbidden Access'})
+      }
+    })
+
+  /*  */
+  app.get('/admin/:email', async(req, res)=>{
+    const email = req.params.email;
+    const user = await userCollection.findOne({email:email});
+    const isAdmin = user.role === 'admin';
+    res.send({admin: isAdmin});
+  })
+
+
 
     app.post('/booking', async (req, res) => {
       const booking = req.body;
@@ -85,12 +157,19 @@ async function run() {
       res.send(services);
     })
 
-    app.get('/booking', async(req, res)=>{
+    app.get('/booking', verifyJWT, async(req, res)=>{
       const patient = req.query.patient;
-
-      const query = { patient: patient };
-      const bookings = await bookingCollection.find(query).toArray();
-      res.send(bookings)
+      const authorization = req.headers.authorization;
+      const decodedEmail = req.decoded.email;
+      if(patient === decodedEmail){
+        // console.log('auth header', authorization);
+        const query = { patient: patient };
+        const bookings = await bookingCollection.find(query).toArray();
+        return res.send(bookings)
+      }
+      else{
+        return res.status(403).send({message: 'Forbidden Access'});
+      }
 
     })
 
