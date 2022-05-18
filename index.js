@@ -4,7 +4,9 @@ const cors = require('cors')
 const port = process.env.PORT || 5000;
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 
 app.use(cors());
@@ -74,8 +76,36 @@ function sendAppointmentEmail(booking) {
       console.log('Message sent: ' , info);
     }
 });
+}
 
-  
+function sendPaymentConfirmationEmail(booking) {
+  const {patient, patientName, date, treatment, slot  } = booking;
+
+  var email = {
+    from: process.env.EMAIL_SENDER ,
+    to: patient,
+    subject: `We have recived your Payment ${treatment} is on ${date} at ${slot} is Confirm`,
+    text: `Your Payment for this Appointment is Confirm ${treatment}`,
+    html: `
+      <div>
+      <h1>Hellw ${patientName} </h1>
+      <p>Thank Yoy for Your Payment</p>
+      <p>Looking forward to seeing you  on ${date} at ${slot}. </p>
+      <h3> Our Address</h3>
+      <p>Dhaka, Bangladesh </p>
+      <a href="https://web.programming-hero.com/">Unsubscribe</a>
+      </div>
+    `
+  };
+
+  emailClient.sendMail(email, function(err, info){
+    if (err ){
+      console.log(err);
+    }
+    else {
+      console.log('Message sent: ' , info);
+    }
+});
 }
 
 async function run() {
@@ -85,6 +115,7 @@ async function run() {
     const bookingCollection = client.db('doctors_portal').collection('bookings');
     const userCollection = client.db('doctors_portal').collection('users');
     const doctorCollection = client.db('doctors_portal').collection('doctors');
+    const paymentCollection = client.db('doctors_portal').collection('payments');
 
     app.get('/service', async (req, res) => {
       const query = {};
@@ -103,6 +134,20 @@ async function run() {
         return res.status(403).send({message: 'Forbidden access'})
       }
     }
+
+    /* m-77 stripe payment intent  */
+    app.post('/create-payment-intent', verifyJWT, async(req, res) =>{
+      const service = req.body;
+      const price = service.price;
+      const amount = price*100;
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount : amount,
+        currency: 'usd',
+        payment_method_types:['card']
+      });
+      res.send({clientSecret: paymentIntent.client_secret})
+    });
+
 
     /*
     /* API Naming Convention  
@@ -203,6 +248,23 @@ async function run() {
         res.send(result);
       })
 
+      /* m-77 */
+      app.patch('/booking/:id', async(req,res)=>{
+        const id = req.params.id;
+        const payment = req.body;
+        const filter = {_id: ObjectId(id)};
+        const updateDoc = {
+          $set: {
+            paid: true,
+            transactionId: payment.transactionId,
+          }
+        }
+        const updateBooking = await bookingCollection.updateOne(filter, updateDoc);
+        const result = await paymentCollection.insertOne(payment);
+        res.send(updateBooking)
+        
+      })
+
 
   
 
@@ -252,7 +314,14 @@ async function run() {
       else{
         return res.status(403).send({message: 'Forbidden Access'});
       }
+    })
 
+    /* m-77 */
+    app.get('/booking/:id',verifyJWT, async(req, res)=>{
+      const id = req.params.id;
+      const query = {_id: ObjectId(id)}
+      const booking = await bookingCollection.findOne(query);
+      res.send(booking);
     })
 
 
